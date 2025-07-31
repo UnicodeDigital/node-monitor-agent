@@ -14,6 +14,14 @@ A high-performance Rust-based monitoring agent for blockchain nodes that support
 
 ## Quick Start
 
+### Download Pre-built Binary (Recommended)
+
+**One-liner download for Linux x86_64:**
+
+```bash
+curl -L https://raw.githubusercontent.com/UnicodeDigital/node-monitor-agent/main/download.sh | bash
+```
+
 ### Build from Source
 
 ```bash
