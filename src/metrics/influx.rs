@@ -49,7 +49,7 @@ impl MetricsClient for InfluxDBClient {
 
     fn write(&self, metric: &Metrics) {
 
-        let table_name = format!("{}:{}", self.config.table_name, self.chain_name);
+        let table_name = format!("{}:{}", self.config.db_name, self.chain_name);
 
         let write_query = DBMetrics {
             name: &self.name,

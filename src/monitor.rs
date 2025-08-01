@@ -160,7 +160,7 @@ async fn check_evm_node_http(http_url: String, metrics: Box<dyn MetricsClient>) 
             }
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
 
 }
