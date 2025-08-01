@@ -4,6 +4,7 @@ pub struct Metrics {
     pub block_height: u64,
     pub block_timestamp: u64,
     pub os_timestamp: i64,
+    pub diff: i64,
 }
 
 pub trait MetricsClient: Send + Sync {

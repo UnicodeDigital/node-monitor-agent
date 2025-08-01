@@ -12,7 +12,15 @@ async fn main() -> Result<()> {
 
     println!("Starting monitor agent with config: {:?}", args);
     
-    println!("Starting {} monitors for multiple WS endpoints", args.ws.len());
+    let ws_count = args.ws.len();
+    let http_count = args.http.len();
+    
+    if ws_count == 0 && http_count == 0 {
+        println!("No endpoints configured! Please provide --ws or --http endpoints.");
+        return Ok(());
+    }
+    
+    println!("Starting {} WebSocket monitors and {} HTTP monitors", ws_count, http_count);
     let manager = MonitorManager::new(args);
     manager.run().await?;
 

@@ -32,14 +32,14 @@ struct MessageBody {
 
 impl HttpClient {
     pub fn new(config: Args) -> Self {
-        let name = config.name.clone();
-        let chain_name = config.chain_name.first()
+        let chain_name = config.ws_names.first()
             .cloned()
             .unwrap_or_else(|| "http-client".to_string());
+        let name = config.name.clone(); // Use the same name as chain_name for now
         
         let client = reqwest::Client::new();
         
-        info!("Metrics initialized with name: {}, chain_name: {}, server: {}, db_name: {}, table_name: {}", 
+        info!("HTTP Metrics client initialized with name: {}, chain_name: {}, server: {}, db_name: {}, table_name: {}", 
               name, chain_name, config.server, config.db_name, config.table_name);
         Self { name, chain_name, config, client }
     }
@@ -60,7 +60,7 @@ impl MetricsClient for HttpClient {
             block_height: metric.block_height,
             block_timestamp: metric.block_timestamp as i64,
             os_timestamp: metric.os_timestamp,
-            diff: 0,
+            diff: metric.diff,
             db: DB {
                 host: self.config.db_host.clone(),
                 token: self.config.token.clone(),

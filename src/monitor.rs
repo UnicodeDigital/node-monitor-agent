@@ -14,39 +14,69 @@ impl MonitorManager {
         Self { config }
     }
 
+    // Unified function to create monitor tasks
+    fn create_monitor_task<F, Fut>(
+        &self,
+        name: String,
+        url: String,
+        client_type: ClientType,
+        monitor_fn: F,
+    ) -> JoinHandle<Result<()>>
+    where
+        F: FnOnce(String, Box<dyn MetricsClient>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send,
+    {
+        let monitor_config = self.config.for_monitor(name.clone(), url.clone(), client_type.clone());
+
+        let client: Box<dyn MetricsClient> = match client_type {
+            ClientType::Influx => Box::new(metrics::InfluxDBClient::new(monitor_config)),
+            ClientType::Http => Box::new(metrics::HttpClient::new(monitor_config)),
+        };
+        
+        info!("Starting {:?} monitor '{}' for endpoint: {}", client_type, name, url);
+        
+        task::spawn(async move {
+            monitor_fn(url, client).await;
+            Ok(())
+        })
+    }
+
     pub async fn run(self) -> Result<()> {
+        let ws_configs = self.config.get_ws_configs();
+        let http_configs = self.config.get_http_configs();
+
+        info!("Starting {} WebSocket monitors and {} HTTP monitors", 
+              ws_configs.len(), http_configs.len());
+
+        // Create all monitor tasks using functional approach
         let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
 
-        // Check if name and ws array lengths match
-        if self.config.chain_name.len() != self.config.ws.len() {
-            warn!("Name array length ({}) doesn't match WS array length ({}). Using default names for missing entries.", 
-                  self.config.chain_name.len(), self.config.ws.len());
-        }
+        // WebSocket monitors
+        let ws_handles: Vec<JoinHandle<Result<()>>> = ws_configs.into_iter()
+            .map(|config| self.create_monitor_task(
+                config.tag, 
+                config.url, 
+                config.client, 
+                check_evm_node_ws
+            ))
+            .collect();
 
-        // Start a monitor for each WS URL, pairing with corresponding name
-        for (index, ws_url) in self.config.ws.iter().enumerate() {
-            // Get corresponding name, use default if not available
-            let monitor_name = self.config.chain_name.get(index)
-                .cloned()
-                .unwrap_or_else(|| format!("monitor-{}", index));
+        // HTTP monitors
+        let http_handles: Vec<JoinHandle<Result<()>>> = http_configs.into_iter()
+            .map(|config| self.create_monitor_task(
+                config.name, 
+                config.url, 
+                config.client, 
+                check_evm_node_http
+            ))
+            .collect();
 
-            // Create a modified configuration with single name
-            let mut monitor_config = self.config.clone();
-            monitor_config.chain_name = vec![monitor_name.clone()];
+        handles.extend(ws_handles);
+        handles.extend(http_handles);
 
-            let metrics: Box<dyn MetricsClient> = match self.config.client {
-                ClientType::Influx => Box::new(metrics::InfluxDBClient::new(monitor_config)),
-                ClientType::Http => Box::new(metrics::HttpClient::new(monitor_config)),
-            };
-
-            let ws_url_clone = ws_url.clone();
-            info!("Starting monitor '{}' for WS endpoint: {}", monitor_name, ws_url);
-            
-            let handle = task::spawn(async move {
-                check_evm_node(ws_url_clone, metrics).await;
-                Ok(())
-            });
-            handles.push(handle);
+        if handles.is_empty() {
+            warn!("No monitors configured! Please provide WebSocket or HTTP endpoints.");
+            return Ok(());
         }
 
         // Wait for all monitors to complete
@@ -67,11 +97,11 @@ pub fn to_ms( block_timestamp: u64) -> i64 {
     (block_timestamp * 1000) as i64
 }
 
-async fn check_evm_node(ws_url: String, metrics: Box<dyn MetricsClient>) {
+async fn check_evm_node_ws(ws_url: String, metrics: Box<dyn MetricsClient>) {
     loop {
         let ws = WsConnect::new(ws_url.clone());
-        let provider_result: std::result::Result<alloy::providers::fillers::FillProvider<alloy::providers::fillers::JoinFill<alloy::providers::Identity, alloy::providers::fillers::JoinFill<alloy::providers::fillers::GasFiller, alloy::providers::fillers::JoinFill<alloy::providers::fillers::BlobGasFiller, alloy::providers::fillers::JoinFill<alloy::providers::fillers::NonceFiller, alloy::providers::fillers::ChainIdFiller>>>>, alloy::providers::RootProvider>, alloy::transports::RpcError<alloy::transports::TransportErrorKind>> = ProviderBuilder::new()
-            .connect_ws(ws).await ;
+        let provider_result = ProviderBuilder::new()
+            .connect_ws(ws).await;
 
         if let Ok(provider) = provider_result {
             info!("[{}]Node({}) connected successfully.", metrics.name(), ws_url);
@@ -89,6 +119,7 @@ async fn check_evm_node(ws_url: String, metrics: Box<dyn MetricsClient>) {
                         block_height: header.number,
                         block_timestamp: header.timestamp,
                         os_timestamp: now,
+                        diff: 0,
                     });
                 }
             } 
@@ -99,3 +130,37 @@ async fn check_evm_node(ws_url: String, metrics: Box<dyn MetricsClient>) {
     }
 }
 
+async fn check_evm_node_http(http_url: String, metrics: Box<dyn MetricsClient>) {
+    let url = http_url.parse().unwrap();
+    let provider = ProviderBuilder::new().connect_http(url);
+    info!("[{}] HTTP Node({}) connected successfully.", metrics.name(), http_url);
+
+    loop {
+        let before = now_ms();
+
+        match provider.get_block_number().await {
+            Ok(block_number) => {
+                let after = now_ms();
+                let used = after - before;
+                info!("[{}] Current block number: {}, used time: {} ms", metrics.name(), block_number, used);
+
+                // Get block details to get timestamp
+                if let Ok(Some(block)) = provider.get_block(block_number.into()).await {
+                    let _ = metrics.write(&Metrics {
+                        name: metrics.name().to_string(),
+                        block_height: block_number,
+                        block_timestamp: block.header.timestamp,
+                        os_timestamp: before,
+                        diff: used as i64,
+                    });
+                }
+            }
+            Err(e) => {
+                warn!("[{}] Failed to get block number: {}", metrics.name(), e);
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+
+}
